@@ -1,7 +1,572 @@
 ###############################################################################
-# GTEx MITOCHONDRIAL SIGNATURE ANALYSIS
-# Figure 1 — Distribution of MitoAll, MitoOnly, and mtRNA_13PCG scores
-#            + tissue-level median agreement
+# MITOCHONDRIAL SIGNATURE SCORING PIPELINE
+# MitoAll and MitoOnly scoring from GTEx gene-level TPM matrices
+#
+# This script performs:
+# 1. Import of mitochondrial signatures
+# 2. Import of GTEx gene-level TPM matrices
+# 3. Gene-symbol harmonization
+# 4. log2(TPM + 1) transformation
+# 5. Gene-wise z-score calculation
+# 6. Sample-level MitoAll and MitoOnly scoring
+# 7. Signature coverage assessment
+# 8. Wilcoxon rank-sum tests with FDR correction
+# 9. Export of reproducible tables and R objects
+###############################################################################
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(purrr)
+  library(readr)
+  library(rio)
+})
+
+###############################################################################
+# 0) USER SETTINGS
+###############################################################################
+# Run this script from the repository root:
+# source("Rscript/run_pipeline.R")
+
+BASE_DIR <- normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+
+EXPR_DIR <- file.path(BASE_DIR, "GTEx_data")
+SIG_DIR  <- file.path(BASE_DIR, "signatures")
+
+RESULTS_DIR <- file.path(BASE_DIR, "Results")
+TABLE_DIR   <- file.path(RESULTS_DIR, "Tables")
+RDS_DIR     <- file.path(RESULTS_DIR, "RDS")
+INFO_DIR    <- file.path(RESULTS_DIR, "SessionInfo")
+
+dir.create(TABLE_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(RDS_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(INFO_DIR, recursive = TRUE, showWarnings = FALSE)
+
+mitoall_file  <- file.path(SIG_DIR, "MitoAll.xlsx")
+mitoonly_file <- file.path(SIG_DIR, "MitoOnly.xlsx")
+
+gtex_files <- tibble::tribble(
+  ~tissue, ~file_name,
+  "Heart - Left Ventricle",   "gene_tpm_v11_heart_left_ventricle.gct.gz",
+  "Heart - Atrial Appendage", "gene_tpm_v11_heart_atrial_appendage.gct.gz",
+  "Muscle - Skeletal",        "gene_tpm_v11_muscle_skeletal.gct.gz",
+  "Whole Blood",              "gene_tpm_v11_whole_blood.gct.gz"
+)
+
+###############################################################################
+# 1) HELPER FUNCTIONS
+###############################################################################
+
+clean_gene_symbol <- function(x) {
+  x %>%
+    as.character() %>%
+    str_trim() %>%
+    str_to_upper() %>%
+    na_if("") %>%
+    na_if("NA")
+}
+
+resolve_gtex_file <- function(file_name, expr_dir) {
+  
+  uncompressed_name <- str_remove(file_name, "\\.gz$")
+  
+  candidate_paths <- c(
+    file.path(expr_dir, file_name),
+    file.path(expr_dir, uncompressed_name),
+    file.path(expr_dir, uncompressed_name, basename(uncompressed_name))
+  )
+  
+  existing_path <- candidate_paths[file.exists(candidate_paths)]
+  
+  if (length(existing_path) == 0) {
+    stop(
+      "Could not find GTEx file for: ", file_name, "\n",
+      "Checked:\n",
+      paste(candidate_paths, collapse = "\n")
+    )
+  }
+  
+  existing_path[1]
+}
+
+check_files_exist <- function(paths) {
+  missing_files <- paths[!file.exists(paths)]
+  
+  if (length(missing_files) > 0) {
+    stop(
+      "The following files were not found:\n",
+      paste(missing_files, collapse = "\n")
+    )
+  }
+}
+
+import_signature <- function(file, signature_name) {
+  
+  df <- rio::import(file)
+  
+  if (!"Gene name" %in% colnames(df)) {
+    stop(
+      "The file ", basename(file),
+      " does not contain a column named 'Gene name'."
+    )
+  }
+  
+  df %>%
+    transmute(
+      signature = signature_name,
+      gene_symbol = clean_gene_symbol(`Gene name`)
+    ) %>%
+    filter(!is.na(gene_symbol)) %>%
+    distinct(signature, gene_symbol)
+}
+
+read_gtex_tpm_gct <- function(file, tissue, target_genes = NULL) {
+  
+  message("Reading GTEx file: ", basename(file), " | Tissue: ", tissue)
+  
+  gct <- data.table::fread(
+    file,
+    skip = 2,
+    data.table = FALSE,
+    showProgress = FALSE
+  )
+  
+  if (!all(c("Name", "Description") %in% colnames(gct))) {
+    stop(
+      "The file ", basename(file),
+      " does not look like a standard GTEx GCT file."
+    )
+  }
+  
+  sample_cols <- setdiff(colnames(gct), c("Name", "Description"))
+  
+  gct_clean <- gct %>%
+    mutate(
+      ensembl_id = str_remove(Name, "\\..*$"),
+      gene_symbol = clean_gene_symbol(Description)
+    ) %>%
+    filter(!is.na(gene_symbol))
+  
+  if (!is.null(target_genes)) {
+    gct_clean <- gct_clean %>%
+      filter(gene_symbol %in% target_genes)
+  }
+  
+  gct_long <- gct_clean %>%
+    select(gene_symbol, all_of(sample_cols)) %>%
+    pivot_longer(
+      cols = all_of(sample_cols),
+      names_to = "sample_id",
+      values_to = "TPM"
+    ) %>%
+    mutate(
+      tissue = tissue,
+      TPM = as.numeric(TPM)
+    ) %>%
+    group_by(tissue, sample_id, gene_symbol) %>%
+    summarise(
+      TPM = mean(TPM, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      log2_TPM = log2(TPM + 1)
+    )
+  
+  gct_long
+}
+
+run_one_wilcox <- function(signature_name, comparison_id, group_1, group_2, score_data) {
+  
+  df_sig <- score_data %>%
+    filter(signature == signature_name)
+  
+  x <- df_sig %>%
+    filter(tissue == group_1) %>%
+    pull(signature_score) %>%
+    na.omit()
+  
+  y <- df_sig %>%
+    filter(tissue == group_2) %>%
+    pull(signature_score) %>%
+    na.omit()
+  
+  if (length(x) < 2 || length(y) < 2) {
+    return(
+      tibble(
+        signature = signature_name,
+        comparison_id = comparison_id,
+        group_1 = group_1,
+        group_2 = group_2,
+        n_group_1 = length(x),
+        n_group_2 = length(y),
+        median_group_1 = NA_real_,
+        median_group_2 = NA_real_,
+        median_difference = NA_real_,
+        p_value = NA_real_
+      )
+    )
+  }
+  
+  test <- wilcox.test(
+    x = x,
+    y = y,
+    alternative = "two.sided",
+    exact = FALSE
+  )
+  
+  tibble(
+    signature = signature_name,
+    comparison_id = comparison_id,
+    group_1 = group_1,
+    group_2 = group_2,
+    n_group_1 = length(x),
+    n_group_2 = length(y),
+    median_group_1 = median(x, na.rm = TRUE),
+    median_group_2 = median(y, na.rm = TRUE),
+    median_difference = median_group_1 - median_group_2,
+    p_value = test$p.value
+  )
+}
+
+###############################################################################
+# 2) RESOLVE AND CHECK INPUT FILES
+###############################################################################
+
+gtex_files <- gtex_files %>%
+  mutate(
+    file = map_chr(file_name, resolve_gtex_file, expr_dir = EXPR_DIR)
+  )
+
+check_files_exist(c(mitoall_file, mitoonly_file, gtex_files$file))
+
+message("\nInput files successfully located.\n")
+
+###############################################################################
+# 3) IMPORT MITOALL AND MITOONLY SIGNATURES
+###############################################################################
+
+mitoall_genes <- import_signature(
+  file = mitoall_file,
+  signature_name = "MitoAll"
+)
+
+mitoonly_genes <- import_signature(
+  file = mitoonly_file,
+  signature_name = "MitoOnly"
+)
+
+signature_genes <- bind_rows(
+  mitoall_genes,
+  mitoonly_genes
+) %>%
+  distinct(signature, gene_symbol)
+
+target_genes <- signature_genes %>%
+  pull(gene_symbol) %>%
+  unique()
+
+message("MitoAll genes: ", n_distinct(mitoall_genes$gene_symbol))
+message("MitoOnly genes: ", n_distinct(mitoonly_genes$gene_symbol))
+message("Total unique signature genes: ", length(target_genes))
+
+###############################################################################
+# 4) IMPORT GTEX TPM FILES AND TRANSFORM EXPRESSION
+###############################################################################
+
+gtex_expr_long <- pmap_dfr(
+  .l = list(
+    file = gtex_files$file,
+    tissue = gtex_files$tissue
+  ),
+  .f = ~ read_gtex_tpm_gct(
+    file = ..1,
+    tissue = ..2,
+    target_genes = target_genes
+  )
+)
+
+###############################################################################
+# 5) BASIC QUALITY CHECKS
+###############################################################################
+
+sample_summary <- gtex_expr_long %>%
+  distinct(tissue, sample_id) %>%
+  count(tissue, name = "n_samples") %>%
+  arrange(tissue)
+
+gene_summary_by_tissue <- gtex_expr_long %>%
+  distinct(tissue, gene_symbol) %>%
+  count(tissue, name = "n_signature_genes_detected") %>%
+  arrange(tissue)
+
+signature_coverage_import <- signature_genes %>%
+  left_join(
+    gtex_expr_long %>%
+      distinct(gene_symbol) %>%
+      mutate(detected_in_gtex = TRUE),
+    by = "gene_symbol"
+  ) %>%
+  mutate(
+    detected_in_gtex = if_else(is.na(detected_in_gtex), FALSE, detected_in_gtex)
+  ) %>%
+  group_by(signature) %>%
+  summarise(
+    genes_in_signature = n_distinct(gene_symbol),
+    genes_detected_in_gtex = n_distinct(gene_symbol[detected_in_gtex]),
+    coverage = genes_detected_in_gtex / genes_in_signature,
+    .groups = "drop"
+  )
+
+###############################################################################
+# 6) COMPUTE GENE-WISE Z-SCORES
+###############################################################################
+# Z-scores are calculated gene by gene across all selected GTEx samples.
+
+gtex_expr_z <- gtex_expr_long %>%
+  group_by(gene_symbol) %>%
+  mutate(
+    gene_mean_log2TPM = mean(log2_TPM, na.rm = TRUE),
+    gene_sd_log2TPM = sd(log2_TPM, na.rm = TRUE),
+    z_log2_TPM = if_else(
+      is.na(gene_sd_log2TPM) | gene_sd_log2TPM == 0,
+      NA_real_,
+      (log2_TPM - gene_mean_log2TPM) / gene_sd_log2TPM
+    )
+  ) %>%
+  ungroup()
+
+###############################################################################
+# 7) CALCULATE SAMPLE-LEVEL SIGNATURE SCORES
+###############################################################################
+
+signature_scores <- gtex_expr_z %>%
+  inner_join(signature_genes, by = "gene_symbol") %>%
+  group_by(tissue, sample_id, signature) %>%
+  summarise(
+    n_genes_used = sum(!is.na(z_log2_TPM)),
+    signature_score = mean(z_log2_TPM, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    signature_score = if_else(n_genes_used == 0, NA_real_, signature_score)
+  )
+
+###############################################################################
+# 8) CHECK SIGNATURE COVERAGE FOR SCORING
+###############################################################################
+
+tissues <- sort(unique(gtex_expr_long$tissue))
+
+detected_genes_by_tissue <- gtex_expr_z %>%
+  filter(!is.na(z_log2_TPM)) %>%
+  distinct(tissue, gene_symbol) %>%
+  mutate(detected = TRUE)
+
+coverage_by_tissue <- tidyr::expand_grid(
+  tissue = tissues,
+  signature_genes
+) %>%
+  left_join(
+    detected_genes_by_tissue,
+    by = c("tissue", "gene_symbol")
+  ) %>%
+  mutate(
+    detected = if_else(is.na(detected), FALSE, detected)
+  ) %>%
+  group_by(tissue, signature) %>%
+  summarise(
+    genes_in_signature = n_distinct(gene_symbol),
+    genes_detected_for_scoring = n_distinct(gene_symbol[detected]),
+    coverage = genes_detected_for_scoring / genes_in_signature,
+    .groups = "drop"
+  ) %>%
+  arrange(signature, tissue)
+
+coverage_overall <- signature_genes %>%
+  left_join(
+    gtex_expr_z %>%
+      filter(!is.na(z_log2_TPM)) %>%
+      distinct(gene_symbol) %>%
+      mutate(detected = TRUE),
+    by = "gene_symbol"
+  ) %>%
+  mutate(
+    detected = if_else(is.na(detected), FALSE, detected)
+  ) %>%
+  group_by(signature) %>%
+  summarise(
+    genes_in_signature = n_distinct(gene_symbol),
+    genes_detected_for_scoring = n_distinct(gene_symbol[detected]),
+    coverage = genes_detected_for_scoring / genes_in_signature,
+    .groups = "drop"
+  )
+
+###############################################################################
+# 9) SUMMARIZE SIGNATURE SCORES BY TISSUE
+###############################################################################
+
+score_summary_by_tissue <- signature_scores %>%
+  group_by(signature, tissue) %>%
+  summarise(
+    n_samples = n_distinct(sample_id),
+    median_score = median(signature_score, na.rm = TRUE),
+    mean_score = mean(signature_score, na.rm = TRUE),
+    q1 = quantile(signature_score, 0.25, na.rm = TRUE),
+    q3 = quantile(signature_score, 0.75, na.rm = TRUE),
+    iqr = IQR(signature_score, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(signature, desc(median_score))
+
+###############################################################################
+# 10) WILCOXON RANK-SUM TESTS
+###############################################################################
+
+planned_comparisons <- tibble::tribble(
+  ~comparison_id, ~group_1, ~group_2,
+  "Heart_Left_Ventricle_vs_Whole_Blood",   "Heart - Left Ventricle",   "Whole Blood",
+  "Heart_Atrial_Appendage_vs_Whole_Blood", "Heart - Atrial Appendage", "Whole Blood",
+  "Muscle_Skeletal_vs_Whole_Blood",        "Muscle - Skeletal",        "Whole Blood"
+)
+
+wilcox_results <- tidyr::expand_grid(
+  signature = sort(unique(signature_scores$signature)),
+  planned_comparisons
+) %>%
+  pmap_dfr(
+    function(signature, comparison_id, group_1, group_2) {
+      run_one_wilcox(
+        signature_name = signature,
+        comparison_id = comparison_id,
+        group_1 = group_1,
+        group_2 = group_2,
+        score_data = signature_scores
+      )
+    }
+  ) %>%
+  group_by(signature) %>%
+  mutate(
+    p_adj_fdr = p.adjust(p_value, method = "BH"),
+    direction = case_when(
+      median_difference > 0 ~ "Higher in group_1",
+      median_difference < 0 ~ "Lower in group_1",
+      median_difference == 0 ~ "No median difference",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(signature, p_adj_fdr)
+
+###############################################################################
+# 11) EXPORT RESULTS
+###############################################################################
+
+saveRDS(
+  signature_genes,
+  file.path(RDS_DIR, "signature_genes_clean.rds")
+)
+
+saveRDS(
+  gtex_expr_long,
+  file.path(RDS_DIR, "gtex_mito_signature_genes_log2TPM_long.rds")
+)
+
+saveRDS(
+  gtex_expr_z,
+  file.path(RDS_DIR, "gtex_expr_gene_wise_zscores.rds")
+)
+
+saveRDS(
+  signature_scores,
+  file.path(RDS_DIR, "gtex_mitoall_mitoonly_sample_scores.rds")
+)
+
+write_csv(
+  sample_summary,
+  file.path(TABLE_DIR, "sample_summary_by_tissue.csv")
+)
+
+write_csv(
+  gene_summary_by_tissue,
+  file.path(TABLE_DIR, "detected_signature_genes_by_tissue.csv")
+)
+
+write_csv(
+  signature_coverage_import,
+  file.path(TABLE_DIR, "signature_coverage_summary_import.csv")
+)
+
+write_csv(
+  coverage_by_tissue,
+  file.path(TABLE_DIR, "signature_coverage_by_tissue.csv")
+)
+
+write_csv(
+  coverage_overall,
+  file.path(TABLE_DIR, "signature_coverage_overall.csv")
+)
+
+write_csv(
+  signature_scores,
+  file.path(TABLE_DIR, "gtex_mitoall_mitoonly_sample_scores.csv")
+)
+
+write_csv(
+  score_summary_by_tissue,
+  file.path(TABLE_DIR, "signature_score_summary_by_tissue.csv")
+)
+
+write_csv(
+  wilcox_results,
+  file.path(TABLE_DIR, "wilcoxon_planned_comparisons_fdr.csv")
+)
+
+writeLines(
+  capture.output(sessionInfo()),
+  con = file.path(INFO_DIR, "run_pipeline_sessionInfo.txt")
+)
+
+###############################################################################
+# 12) PRINT SUMMARY
+###############################################################################
+
+message("\n============================================================")
+message("PIPELINE COMPLETED SUCCESSFULLY")
+message("============================================================")
+
+message("\nSample summary:")
+print(sample_summary)
+
+message("\nOverall signature coverage:")
+print(coverage_overall)
+
+message("\nScore summary by tissue:")
+print(score_summary_by_tissue)
+
+message("\nWilcoxon planned comparisons:")
+print(wilcox_results)
+
+message("\nResults saved in:")
+message("Tables: ", TABLE_DIR)
+message("RDS:    ", RDS_DIR)
+message("Session info: ", INFO_DIR)
+
+###############################################################################
+# FIGURE 1 — REPRESENTATIVE MITOCHONDRIAL SIGNATURE SCORING RESULT
+#
+# Purpose:
+#   Generate a publication-ready representative result figure showing
+#   MitoAll and MitoOnly sample-level scores across selected GTEx tissues.
+#
+# Input:
+#   Results/Tables/gtex_mitoall_mitoonly_sample_scores.csv
+#
+# Output:
+#   Results/Figures/Figure_1.png
+#   Results/Figures/Figure_1.pdf
+#   Results/Figures/Figure_1.tiff
 ###############################################################################
 
 suppressPackageStartupMessages({
@@ -12,26 +577,43 @@ suppressPackageStartupMessages({
   library(stringr)
   library(patchwork)
   library(scales)
-  library(svglite)
 })
 
 ###############################################################################
-# 0) USER SETTINGS
+# 0) SETTINGS
 ###############################################################################
 
-BASE_DIR  <- "C:/Users/CORDEIH/Desktop/Whole_Project/Manuscript/Analyses"
-STEP2_DIR <- file.path(BASE_DIR, "output", "step2_signature_scores")
-FIG_DIR   <- file.path(BASE_DIR, "output", "figures")
+BASE_DIR <- normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+
+TABLE_DIR <- file.path(BASE_DIR, "Results", "Tables")
+FIG_DIR   <- file.path(BASE_DIR, "Results", "Figures")
 
 dir.create(FIG_DIR, recursive = TRUE, showWarnings = FALSE)
 
-score_file <- file.path(STEP2_DIR, "gtex_mitoall_mitoonly_mtrna_sample_scores.csv")
+score_file <- file.path(TABLE_DIR, "gtex_mitoall_mitoonly_sample_scores.csv")
+
+if (!file.exists(score_file)) {
+  stop(
+    "Score file not found:\n",
+    score_file,
+    "\nRun the main pipeline before generating Figure 1."
+  )
+}
 
 ###############################################################################
-# 1) IMPORT DATA
+# 1) IMPORT SCORES
 ###############################################################################
 
 scores <- read_csv(score_file, show_col_types = FALSE)
+
+required_cols <- c("tissue", "sample_id", "signature", "signature_score", "n_genes_used")
+
+if (!all(required_cols %in% colnames(scores))) {
+  stop(
+    "The score table does not contain the required columns:\n",
+    paste(required_cols, collapse = ", ")
+  )
+}
 
 ###############################################################################
 # 2) HARMONIZE LABELS AND ORDER
@@ -51,45 +633,27 @@ tissue_labels <- c(
   "Muscle - Skeletal" = "Skeletal\nmuscle"
 )
 
-signature_order <- c(
-  "MitoAll",
-  "MitoOnly",
-  "mtRNA_13PCG"
-)
+signature_order <- c("MitoAll", "MitoOnly")
 
 signature_labels <- c(
   "MitoAll" = "MitoAll",
-  "MitoOnly" = "MitoOnly",
-  "mtRNA_13PCG" = "mtRNA\n13 PCGs"
+  "MitoOnly" = "MitoOnly"
 )
 
-expected_cols <- c("tissue", "sample_id", "signature", "signature_score")
-
-if (!all(expected_cols %in% colnames(scores))) {
-  stop("The score file does not contain the expected columns.")
-}
-
-missing_signatures <- setdiff(signature_order, unique(scores$signature))
-
-if (length(missing_signatures) > 0) {
-  stop(
-    "The following signatures are missing from the score file: ",
-    paste(missing_signatures, collapse = ", "),
-    "\nPlease rerun Step 1 and Step 2 after adding mtRNA_13PCG."
-  )
-}
-
 scores <- scores %>%
-  filter(signature %in% signature_order) %>%
+  filter(
+    tissue %in% tissue_order,
+    signature %in% signature_order,
+    !is.na(signature_score)
+  ) %>%
   mutate(
     tissue = factor(tissue, levels = tissue_order),
     signature = factor(signature, levels = signature_order)
-  ) %>%
-  filter(
-    !is.na(tissue),
-    !is.na(signature),
-    !is.na(signature_score)
   )
+
+if (nrow(scores) == 0) {
+  stop("No valid MitoAll/MitoOnly scores were found after filtering.")
+}
 
 ###############################################################################
 # 3) COLORS
@@ -102,648 +666,141 @@ tissue_palette <- c(
   "Muscle - Skeletal" = "#D95F02"
 )
 
-signature_palette <- c(
-  "MitoAll" = "#2166AC",
-  "MitoOnly" = "#B2182B",
-  "mtRNA_13PCG" = "#4D4D4D"
-)
-
 ###############################################################################
-# 4) COMMON THEME
+# 4) SUMMARY TABLE FOR FIGURE
 ###############################################################################
 
-theme_pub <- theme_classic(base_size = 12) +
-  theme(
-    axis.title = element_text(size = 12, face = "bold"),
-    axis.text = element_text(size = 10, color = "black"),
-    strip.text = element_text(size = 11, face = "bold"),
-    plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
-    legend.title = element_text(size = 11, face = "bold"),
-    legend.text = element_text(size = 10),
-    axis.line = element_line(color = "black", linewidth = 0.5),
-    plot.margin = margin(10, 10, 10, 10)
-  )
-
-###############################################################################
-# 5) FUNCTION TO BUILD DISTRIBUTION PANELS
-###############################################################################
-
-make_distribution_plot <- function(signature_name, plot_title) {
-  
-  scores %>%
-    filter(signature == signature_name) %>%
-    ggplot(aes(x = tissue, y = signature_score, fill = tissue)) +
-    geom_violin(
-      width = 0.95,
-      alpha = 0.35,
-      color = NA,
-      trim = FALSE
-    ) +
-    geom_boxplot(
-      width = 0.18,
-      outlier.shape = NA,
-      alpha = 0.85,
-      color = "black",
-      linewidth = 0.35
-    ) +
-    geom_jitter(
-      aes(color = tissue),
-      width = 0.16,
-      size = 0.65,
-      alpha = 0.16,
-      show.legend = FALSE
-    ) +
-    stat_summary(
-      fun = median,
-      geom = "point",
-      shape = 23,
-      size = 2.5,
-      fill = "white",
-      color = "black"
-    ) +
-    scale_fill_manual(values = tissue_palette, labels = tissue_labels) +
-    scale_color_manual(values = tissue_palette, labels = tissue_labels) +
-    scale_x_discrete(labels = tissue_labels) +
-    labs(
-      title = plot_title,
-      x = NULL,
-      y = "Sample-level score"
-    ) +
-    theme_pub +
-    theme(
-      legend.position = "none",
-      axis.text.x = element_text(
-        size = 9,
-        angle = 0,
-        hjust = 0.5,
-        vjust = 0.5
-      )
-    )
-}
-
-###############################################################################
-# 6) BUILD TOP DISTRIBUTION PANELS
-###############################################################################
-
-plot_A <- make_distribution_plot(
-  signature_name = "MitoAll",
-  plot_title = "MitoAll"
-)
-
-plot_B <- make_distribution_plot(
-  signature_name = "MitoOnly",
-  plot_title = "MitoOnly"
-)
-
-plot_C <- make_distribution_plot(
-  signature_name = "mtRNA_13PCG",
-  plot_title = "mtRNA 13 PCGs"
-)
-
-###############################################################################
-# 7) TISSUE-LEVEL MEDIAN AGREEMENT
-###############################################################################
-
-tissue_median_long <- scores %>%
-  group_by(tissue, signature) %>%
+figure_summary <- scores %>%
+  group_by(signature, tissue) %>%
   summarise(
     n_samples = n_distinct(sample_id),
     median_score = median(signature_score, na.rm = TRUE),
+    mean_score = mean(signature_score, na.rm = TRUE),
+    q1 = quantile(signature_score, 0.25, na.rm = TRUE),
+    q3 = quantile(signature_score, 0.75, na.rm = TRUE),
     .groups = "drop"
   )
 
 write_csv(
-  tissue_median_long,
-  file.path(FIG_DIR, "Figure1_tissue_level_median_scores.csv")
+  figure_summary,
+  file.path(TABLE_DIR, "Figure_1_score_summary_by_tissue.csv")
 )
 
-plot_D <- ggplot(
-  tissue_median_long,
-  aes(x = tissue, y = median_score, group = signature, color = signature)
-) +
-  geom_line(linewidth = 0.9) +
-  geom_point(size = 3.2) +
-  scale_color_manual(values = signature_palette, labels = signature_labels) +
-  scale_x_discrete(labels = tissue_labels) +
-  labs(
-    title = "Tissue-level median agreement",
-    x = NULL,
-    y = "Median sample-level score",
-    color = "Signature"
-  ) +
-  theme_pub +
+###############################################################################
+# 5) THEME
+###############################################################################
+
+theme_figure <- theme_classic(base_size = 12) +
   theme(
-    legend.position = "right",
+    axis.title = element_text(size = 12, face = "bold", color = "black"),
+    axis.text = element_text(size = 10, color = "black"),
     axis.text.x = element_text(
       size = 10,
       angle = 0,
       hjust = 0.5,
-      vjust = 0.5
-    )
-  )
-
-###############################################################################
-# 8) COMBINE FIGURE 1
-###############################################################################
-
-figure_1 <-
-  (plot_A | plot_B | plot_C) /
-  plot_D +
-  plot_layout(
-    heights = c(1.2, 1)
-  ) +
-  plot_annotation(
-    tag_levels = "A",
-    theme = theme(
-      plot.tag = element_text(size = 14, face = "bold")
-    )
-  )
-
-###############################################################################
-# 9) SAVE FIGURE 1
-###############################################################################
-
-ggsave(
-  filename = file.path(FIG_DIR, "Figure1_MitoSignatures_Distribution_MedianAgreement.pdf"),
-  plot = figure_1,
-  width = 16,
-  height = 10,
-  units = "in",
-  device = cairo_pdf
-)
-
-ggsave(
-  filename = file.path(FIG_DIR, "Figure1_MitoSignatures_Distribution_MedianAgreement.tiff"),
-  plot = figure_1,
-  width = 16,
-  height = 10,
-  units = "in",
-  dpi = 600,
-  compression = "lzw"
-)
-
-ggsave(
-  filename = file.path(FIG_DIR, "Figure1_MitoSignatures_Distribution_MedianAgreement.png"),
-  plot = figure_1,
-  width = 16,
-  height = 10,
-  units = "in",
-  dpi = 600
-)
-
-print(figure_1)
-
-
-###############################################################################
-# GTEx MITOCHONDRIAL SIGNATURE ANALYSIS
-# Figure 2 — MitoAll/MitoOnly versus mtRNA_13PCG correlations
-###############################################################################
-
-suppressPackageStartupMessages({
-  library(dplyr)
-  library(tidyr)
-  library(ggplot2)
-  library(readr)
-  library(stringr)
-  library(patchwork)
-  library(scales)
-})
-
-# ###############################################################################
-# # 0) USER SETTINGS
-# ###############################################################################
-# 
-# BASE_DIR  <- "C:/Users/CORDEIH/Desktop/Whole_Project/Manuscript/Analyses"
-# STEP2_DIR <- file.path(BASE_DIR, "output", "step2_signature_scores")
-# FIG_DIR   <- file.path(BASE_DIR, "output", "figures")
-# 
-# dir.create(FIG_DIR, recursive = TRUE, showWarnings = FALSE)
-# 
-# score_file <- file.path(STEP2_DIR, "gtex_mitoall_mitoonly_sample_scores.csv")
-
-###############################################################################
-# 1) IMPORT DATA
-###############################################################################
-
-scores <- read_csv(score_file, show_col_types = FALSE)
-
-###############################################################################
-# 2) HELPER FUNCTIONS
-###############################################################################
-
-format_p_value <- function(p, prefix = "p") {
-  case_when(
-    is.na(p) ~ NA_character_,
-    p < 0.001 ~ paste0(prefix, " < 0.001"),
-    TRUE ~ paste0(prefix, " = ", signif(p, 3))
-  )
-}
-
-run_spearman <- function(df, x_col, y_col, comparison_name) {
-  
-  df_test <- df %>%
-    select(all_of(c(x_col, y_col))) %>%
-    filter(
-      !is.na(.data[[x_col]]),
-      !is.na(.data[[y_col]])
-    )
-  
-  if (nrow(df_test) < 3) {
-    return(
-      tibble(
-        comparison = comparison_name,
-        x = x_col,
-        y = y_col,
-        n_samples = nrow(df_test),
-        spearman_rho = NA_real_,
-        p_value = NA_real_
-      )
-    )
-  }
-  
-  test <- cor.test(
-    df_test[[x_col]],
-    df_test[[y_col]],
-    method = "spearman",
-    exact = FALSE
-  )
-  
-  tibble(
-    comparison = comparison_name,
-    x = x_col,
-    y = y_col,
-    n_samples = nrow(df_test),
-    spearman_rho = unname(test$estimate),
-    p_value = test$p.value
-  )
-}
-
-make_corr_label <- function(rho, p) {
-  paste0(
-    "Spearman \u03c1 = ", round(rho, 3),
-    "\n", format_p_value(p, prefix = "p")
-  )
-}
-
-###############################################################################
-# 3) HARMONIZE LABELS AND ORDER
-###############################################################################
-
-tissue_order <- c(
-  "Whole Blood",
-  "Heart - Atrial Appendage",
-  "Heart - Left Ventricle",
-  "Muscle - Skeletal"
-)
-
-tissue_labels <- c(
-  "Whole Blood" = "Whole\nBlood",
-  "Heart - Atrial Appendage" = "Heart\nAtrial appendage",
-  "Heart - Left Ventricle" = "Heart\nLeft ventricle",
-  "Muscle - Skeletal" = "Skeletal\nmuscle"
-)
-
-signature_order <- c(
-  "MitoAll",
-  "MitoOnly",
-  "mtRNA_13PCG"
-)
-
-missing_signatures <- setdiff(signature_order, unique(scores$signature))
-
-if (length(missing_signatures) > 0) {
-  stop(
-    "The following signatures are missing from the score file: ",
-    paste(missing_signatures, collapse = ", "),
-    "\nPlease rerun Step 1 and Step 2 after adding mtRNA_13PCG."
-  )
-}
-
-scores <- scores %>%
-  filter(signature %in% signature_order) %>%
-  mutate(
-    tissue = factor(tissue, levels = tissue_order),
-    signature = factor(signature, levels = signature_order)
-  ) %>%
-  filter(
-    !is.na(tissue),
-    !is.na(signature_score)
-  )
-
-scores_wide <- scores %>%
-  select(tissue, sample_id, signature, signature_score) %>%
-  distinct() %>%
-  pivot_wider(
-    names_from = signature,
-    values_from = signature_score
-  ) %>%
-  filter(
-    !is.na(MitoAll),
-    !is.na(MitoOnly),
-    !is.na(mtRNA_13PCG)
-  )
-
-###############################################################################
-# 4) COLORS AND THEME
-###############################################################################
-
-tissue_palette <- c(
-  "Whole Blood" = "#B2182B",
-  "Heart - Atrial Appendage" = "#2166AC",
-  "Heart - Left Ventricle" = "#1B9E77",
-  "Muscle - Skeletal" = "#D95F02"
-)
-
-theme_pub <- theme_classic(base_size = 12) +
-  theme(
-    axis.title = element_text(size = 12, face = "bold"),
-    axis.text = element_text(size = 10, color = "black"),
-    strip.text = element_text(size = 10, face = "bold"),
-    plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
-    legend.title = element_text(size = 11, face = "bold"),
-    legend.text = element_text(size = 10),
-    axis.line = element_line(color = "black", linewidth = 0.5),
+      vjust = 0.5,
+      lineheight = 0.9
+    ),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.text = element_text(size = 12, face = "bold", color = "black"),
+    legend.position = "none",
+    panel.spacing = unit(1.0, "lines"),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
     plot.margin = margin(10, 10, 10, 10)
   )
 
 ###############################################################################
-# 5) POOLED CORRELATIONS
+# 6) BUILD FIGURE
 ###############################################################################
 
-pooled_correlations <- bind_rows(
-  run_spearman(
-    scores_wide,
-    "MitoAll",
-    "mtRNA_13PCG",
-    "Pooled_MitoAll_vs_mtRNA_13PCG"
-  ),
-  run_spearman(
-    scores_wide,
-    "MitoOnly",
-    "mtRNA_13PCG",
-    "Pooled_MitoOnly_vs_mtRNA_13PCG"
-  )
-)
-
-write_csv(
-  pooled_correlations,
-  file.path(FIG_DIR, "Figure2_pooled_spearman_correlations.csv")
-)
-
-pooled_label_mitoall <- pooled_correlations %>%
-  filter(comparison == "Pooled_MitoAll_vs_mtRNA_13PCG") %>%
-  mutate(label = make_corr_label(spearman_rho, p_value)) %>%
-  pull(label)
-
-pooled_label_mitoonly <- pooled_correlations %>%
-  filter(comparison == "Pooled_MitoOnly_vs_mtRNA_13PCG") %>%
-  mutate(label = make_corr_label(spearman_rho, p_value)) %>%
-  pull(label)
-
-###############################################################################
-# 6) PANEL A — POOLED MITOALL VS mtRNA
-###############################################################################
-
-plot_A <- ggplot(
-  scores_wide,
-  aes(x = MitoAll, y = mtRNA_13PCG, color = tissue)
+figure_1 <- ggplot(
+  scores,
+  aes(x = tissue, y = signature_score, fill = tissue)
 ) +
-  geom_point(size = 1.2, alpha = 0.45) +
-  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.65) +
-  annotate(
-    "text",
-    x = quantile(scores_wide$MitoAll, 0.05, na.rm = TRUE),
-    y = quantile(scores_wide$mtRNA_13PCG, 0.95, na.rm = TRUE),
-    label = pooled_label_mitoall,
-    hjust = 0,
-    vjust = 1,
-    size = 3.6
+  geom_violin(
+    width = 0.90,
+    alpha = 0.32,
+    color = NA,
+    trim = FALSE
   ) +
-  scale_color_manual(values = tissue_palette, labels = tissue_labels) +
+  geom_boxplot(
+    width = 0.18,
+    outlier.shape = NA,
+    alpha = 0.92,
+    color = "black",
+    linewidth = 0.35
+  ) +
+  geom_jitter(
+    aes(color = tissue),
+    width = 0.14,
+    size = 0.55,
+    alpha = 0.16,
+    show.legend = FALSE
+  ) +
+  stat_summary(
+    fun = median,
+    geom = "point",
+    shape = 21,
+    size = 2.3,
+    fill = "white",
+    color = "black",
+    stroke = 0.35
+  ) +
+  facet_wrap(
+    ~ signature,
+    nrow = 1,
+    scales = "free_y",
+    labeller = as_labeller(signature_labels)
+  ) +
+  scale_fill_manual(values = tissue_palette) +
+  scale_color_manual(values = tissue_palette) +
+  scale_x_discrete(labels = tissue_labels) +
   labs(
-    title = "Pooled MitoAll vs mtRNA 13 PCGs",
-    x = "MitoAll score",
-    y = "mtRNA 13 PCGs score",
-    color = "Tissue"
+    x = NULL,
+    y = "Sample-level mitochondrial signature score\n(mean gene-wise z-score)"
   ) +
-  theme_pub +
-  theme(
-    legend.position = "right"
-  )
+  theme_figure
 
 ###############################################################################
-# 7) PANEL B — POOLED MITOONLY VS mtRNA
-###############################################################################
-
-plot_B <- ggplot(
-  scores_wide,
-  aes(x = MitoOnly, y = mtRNA_13PCG, color = tissue)
-) +
-  geom_point(size = 1.2, alpha = 0.45) +
-  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.65) +
-  annotate(
-    "text",
-    x = quantile(scores_wide$MitoOnly, 0.05, na.rm = TRUE),
-    y = quantile(scores_wide$mtRNA_13PCG, 0.95, na.rm = TRUE),
-    label = pooled_label_mitoonly,
-    hjust = 0,
-    vjust = 1,
-    size = 3.6
-  ) +
-  scale_color_manual(values = tissue_palette, labels = tissue_labels) +
-  labs(
-    title = "Pooled MitoOnly vs mtRNA 13 PCGs",
-    x = "MitoOnly score",
-    y = "mtRNA 13 PCGs score",
-    color = "Tissue"
-  ) +
-  theme_pub +
-  theme(
-    legend.position = "right"
-  )
-
-###############################################################################
-# 8) TISSUE-SPECIFIC CORRELATIONS
-###############################################################################
-
-tissue_specific_correlations <- scores_wide %>%
-  group_by(tissue) %>%
-  group_modify(~ bind_rows(
-    run_spearman(
-      .x,
-      "MitoAll",
-      "mtRNA_13PCG",
-      "MitoAll_vs_mtRNA_13PCG"
-    ),
-    run_spearman(
-      .x,
-      "MitoOnly",
-      "mtRNA_13PCG",
-      "MitoOnly_vs_mtRNA_13PCG"
-    )
-  )) %>%
-  ungroup() %>%
-  group_by(comparison) %>%
-  mutate(
-    p_adj_fdr = p.adjust(p_value, method = "BH")
-  ) %>%
-  ungroup()
-
-write_csv(
-  tissue_specific_correlations,
-  file.path(FIG_DIR, "Figure2_tissue_specific_spearman_correlations.csv")
-)
-
-make_tissue_label_data <- function(x_col, y_col, comparison_name) {
-  
-  label_positions <- scores_wide %>%
-    group_by(tissue) %>%
-    summarise(
-      x_pos = quantile(.data[[x_col]], 0.05, na.rm = TRUE),
-      y_pos = quantile(.data[[y_col]], 0.95, na.rm = TRUE),
-      .groups = "drop"
-    )
-  
-  tissue_specific_correlations %>%
-    filter(comparison == comparison_name) %>%
-    left_join(label_positions, by = "tissue") %>%
-    mutate(
-      label = make_corr_label(spearman_rho, p_value)
-    )
-}
-
-label_mitoall_by_tissue <- make_tissue_label_data(
-  x_col = "MitoAll",
-  y_col = "mtRNA_13PCG",
-  comparison_name = "MitoAll_vs_mtRNA_13PCG"
-)
-
-label_mitoonly_by_tissue <- make_tissue_label_data(
-  x_col = "MitoOnly",
-  y_col = "mtRNA_13PCG",
-  comparison_name = "MitoOnly_vs_mtRNA_13PCG"
-)
-
-###############################################################################
-# 9) PANEL C — WITHIN-TISSUE MITOALL VS mtRNA
-###############################################################################
-
-plot_C <- ggplot(
-  scores_wide,
-  aes(x = MitoAll, y = mtRNA_13PCG, color = tissue)
-) +
-  geom_point(size = 0.9, alpha = 0.42) +
-  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.55) +
-  geom_text(
-    data = label_mitoall_by_tissue,
-    aes(x = x_pos, y = y_pos, label = label),
-    inherit.aes = FALSE,
-    hjust = 0,
-    vjust = 1,
-    size = 3.0
-  ) +
-  facet_wrap(~tissue, scales = "free", nrow = 1, labeller = as_labeller(tissue_labels)) +
-  scale_color_manual(values = tissue_palette, labels = tissue_labels) +
-  labs(
-    title = "Within-tissue MitoAll vs mtRNA 13 PCGs",
-    x = "MitoAll score",
-    y = "mtRNA 13 PCGs score"
-  ) +
-  theme_pub +
-  theme(
-    legend.position = "none",
-    strip.background = element_rect(fill = "grey95", color = NA)
-  )
-
-###############################################################################
-# 10) PANEL D — WITHIN-TISSUE MITOONLY VS mtRNA
-###############################################################################
-
-plot_D <- ggplot(
-  scores_wide,
-  aes(x = MitoOnly, y = mtRNA_13PCG, color = tissue)
-) +
-  geom_point(size = 0.9, alpha = 0.42) +
-  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.55) +
-  geom_text(
-    data = label_mitoonly_by_tissue,
-    aes(x = x_pos, y = y_pos, label = label),
-    inherit.aes = FALSE,
-    hjust = 0,
-    vjust = 1,
-    size = 3.0
-  ) +
-  facet_wrap(~tissue, scales = "free", nrow = 1, labeller = as_labeller(tissue_labels)) +
-  scale_color_manual(values = tissue_palette, labels = tissue_labels) +
-  labs(
-    title = "Within-tissue MitoOnly vs mtRNA 13 PCGs",
-    x = "MitoOnly score",
-    y = "mtRNA 13 PCGs score"
-  ) +
-  theme_pub +
-  theme(
-    legend.position = "none",
-    strip.background = element_rect(fill = "grey95", color = NA)
-  )
-
-###############################################################################
-# 11) COMBINE FIGURE 2
-###############################################################################
-
-figure_2 <-
-  (plot_A | plot_B) /
-  plot_C /
-  plot_D +
-  plot_layout(
-    heights = c(1, 1, 1)
-  ) +
-  plot_annotation(
-    tag_levels = "A",
-    theme = theme(
-      plot.tag = element_text(size = 14, face = "bold")
-    )
-  )
-
-###############################################################################
-# 12) SAVE FIGURE 2
+# 7) EXPORT FIGURE
 ###############################################################################
 
 ggsave(
-  filename = file.path(FIG_DIR, "Figure2_MitoSignatures_mtRNA_Correlations.pdf"),
-  plot = figure_2,
-  width = 16,
-  height = 15,
+  filename = file.path(FIG_DIR, "Figure_1.pdf"),
+  plot = figure_1,
+  width = 10,
+  height = 5.5,
   units = "in",
-  device = cairo_pdf
+  device = cairo_pdf,
+  bg = "white"
 )
 
 ggsave(
-  filename = file.path(FIG_DIR, "Figure2_MitoSignatures_mtRNA_Correlations.tiff"),
-  plot = figure_2,
-  width = 16,
-  height = 15,
+  filename = file.path(FIG_DIR, "Figure_1.png"),
+  plot = figure_1,
+  width = 10,
+  height = 5.5,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
+
+ggsave(
+  filename = file.path(FIG_DIR, "Figure_1.tiff"),
+  plot = figure_1,
+  width = 10,
+  height = 5.5,
   units = "in",
   dpi = 600,
-  compression = "lzw"
+  compression = "lzw",
+  bg = "white"
 )
 
-ggsave(
-  filename = file.path(FIG_DIR, "Figure2_MitoSignatures_mtRNA_Correlations.png"),
-  plot = figure_2,
-  width = 16,
-  height = 15,
-  units = "in",
-  dpi = 600
-)
+###############################################################################
+# 8) PRINT
+###############################################################################
 
-print(figure_2)
+print(figure_1)
 
-
-
-
-
-
-
-
-
-
+message("\nFigure 1 generated successfully.")
+message("Saved in: ", FIG_DIR)
