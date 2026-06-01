@@ -80,9 +80,9 @@ Mitochondrial-signature-scoring/
 ├── Results/
 │   ├── Tables/
 │   └── Figures/
-│       ├── Figure1_MitoSignature_Workflow.png
-│       ├── Figure1_MitoSignature_Workflow.pdf
-│       └── Figure1_MitoSignature_Workflow.tiff
+│       ├── Figure_MitoSignature_Workflow.png
+│       ├── Figure_1.png
+│       └── Figure_1.pdf
 │
 └── docs/
     └── GTEx_download_instructions.md
