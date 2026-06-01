@@ -137,11 +137,17 @@ Figures are saved in:
 Results/Figures/
 ```
 
-The main framework figure is:
+The main figure is:
 
 ```text
-Results/Figures/Figure1_MitoSignature_Workflow.png
+Results/Figures/Figure_1.pdf
 ```
+
+## Representative result
+
+The representative analysis applies the mitochondrial signature scoring workflow to selected GTEx normal tissues. The resulting figure shows the distribution of **MitoAll** and **MitoOnly** sample-level scores across tissues with distinct expected mitochondrial abundance.
+
+![Figure 1. Representative mitochondrial signature scoring results](Results/Figures/Figure_1.pdf)
 
 
 ## Interpretation
