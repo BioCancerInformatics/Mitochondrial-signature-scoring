@@ -8,7 +8,7 @@ This repository accompanies a methodological chapter describing a transcriptome-
 
 The pipeline starts from gene-level TPM expression matrices and produces sample-level mitochondrial signature scores.
 
-![Mitochondrial signature scoring workflow](results/figures/Figure1_MitoSignature_Workflow_README.png)
+![Mitochondrial signature scoring workflow](results/figures/Figure1_MitoSignature_Workflow.png) 
 
 **Figure 1. Computational framework for mitochondrial signature scoring.** Gene-level TPM matrices are imported, gene symbols are harmonized, MitoAll and MitoOnly genes are matched to the expression matrix, expression values are transformed as `log2(TPM + 1)`, gene-wise z-scores are calculated, and sample-level mitochondrial signature scores are obtained by averaging standardized expression across detected genes in each signature.
 
