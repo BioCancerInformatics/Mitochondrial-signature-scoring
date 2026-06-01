@@ -11,7 +11,6 @@ A reproducible R workflow accompanying the methodological chapter:
 
 **Correspondence:** Lorenzo Galluzzi ([deadoc80@gmail.com](mailto:deadoc80@gmail.com)) and Lukas Bolini ([lukas.goncalves@fccc.edu](mailto:lukas.goncalves@fccc.edu))
 
----
 
 ## Overview
 
@@ -26,7 +25,6 @@ This workflow scores two mitochondrial signatures:
 * **MitoAll**: genes encoding proteins with recognized mitochondrial localization, including proteins that may also localize to other cellular compartments.
 * **MitoOnly**: a stricter subset of genes encoding proteins recognized as mitochondrial-only.
 
----
 
 ## Computational framework
 
@@ -36,7 +34,6 @@ The pipeline starts from gene-level TPM expression matrices and produces sample-
 
 **Computational workflow.** Gene-level TPM matrices are imported, gene symbols are harmonized, MitoAll and MitoOnly genes are matched to the expression matrix, expression values are transformed as `log2(TPM + 1)`, gene-wise z-scores are calculated, and sample-level mitochondrial signature scores are obtained by averaging standardized expression across detected genes in each signature.
 
----
 
 ## Pipeline
 
@@ -58,7 +55,6 @@ The pipeline performs the following steps:
 8. Perform statistical comparisons when applicable.
 9. Generate output tables and the framework figure.
 
----
 
 ## Repository structure
 
@@ -86,7 +82,6 @@ Mitochondrial-signature-scoring/
     └── GTEx_download_instructions.md
 ```
 
----
 
 ## Required R packages
 
@@ -104,7 +99,6 @@ grid
 scales
 ```
 
----
 
 ## Input data
 
@@ -129,7 +123,6 @@ Each signature file must contain a column named:
 Gene name
 ```
 
----
 
 ## Main outputs
 
@@ -151,7 +144,6 @@ The main framework figure is:
 Results/Figures/Figure1_MitoSignature_Workflow.png
 ```
 
----
 
 ## Interpretation
 
@@ -161,7 +153,6 @@ They do not directly measure mitochondrial mass, mitochondrial DNA copy number, 
 
 Because this workflow uses bulk transcriptomic data, mitochondrial signature scores may reflect mitochondrial abundance, mitochondrial biogenesis, mitochondrial retrograde signaling, tissue-specific transcriptional programs, and cell-type composition.
 
----
 
 ## Citation
 
