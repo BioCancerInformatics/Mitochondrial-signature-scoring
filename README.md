@@ -60,7 +60,7 @@ The pipeline performs the following steps:
 6. Calculate sample-level MitoAll and MitoOnly scores.
 7. Assess signature gene recovery.
 8. Perform statistical comparisons when applicable.
-9. Generate output tables and the framework figure.
+9. Generate output tables, RDS objects, session information, and publication-ready figures.
 
 
 ## Repository structure
