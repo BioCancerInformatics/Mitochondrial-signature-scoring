@@ -97,10 +97,8 @@ Mitochondrial-signature-scoring/
 │   │
 │   ├── Figures/
 │   │   ├── Figure1_MitoSignature_Workflow.png
-│   │   ├── Figure1_MitoSignature_Workflow.pdf
 │   │   ├── Figure_1.png
-│   │   ├── Figure_1.pdf
-│   │   └── Figure_1.tiff
+│   │   └── Figure_1.pdf
 │   │
 │   └── SessionInfo/
 │       └── run_pipeline_sessionInfo.txt
