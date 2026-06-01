@@ -10,7 +10,7 @@ The pipeline starts from gene-level TPM expression matrices and produces sample-
 
 ![Workflow](https://raw.githubusercontent.com/BioCancerInformatics/Mitochondrial-signature-scoring/main/Results/Figures/Figure1_MitoSignature_Workflow.png)
 
-**Figure. Computational workflow.** GTEx gene-level TPM matrices are imported, gene symbols are harmonized, MitoAll and MitoOnly genes are matched to the expression matrix, expression values are transformed as `log2(TPM + 1)`, gene-wise z-scores are calculated, and sample-level mitochondrial signature scores are obtained by averaging standardized expression across detected genes in each signature.
+**Computational workflow.** GTEx gene-level TPM matrices are imported, gene symbols are harmonized, MitoAll and MitoOnly genes are matched to the expression matrix, expression values are transformed as `log2(TPM + 1)`, gene-wise z-scores are calculated, and sample-level mitochondrial signature scores are obtained by averaging standardized expression across detected genes in each signature.
 
 ## Pipeline
 
