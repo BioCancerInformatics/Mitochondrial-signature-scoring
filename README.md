@@ -1,5 +1,16 @@
 # Mitochondrial Signature Scoring
 
+### *Interrogating sequencing data for transcriptional signatures of mitochondrial abundance*
+
+A reproducible R workflow accompanying the methodological chapter:
+
+**Higor Almeida Cordeiro Nogueira¹², Abdelrahman M. Ghazal¹, Spencer Brackett¹, Flavie Naulin¹, Ai Sato¹, Pietro Mancuso¹, Manuel Beltrán-Visiedo¹, Emma Guilbaud¹, Enrique Medina-Acosta², Lorenzo Galluzzi¹**, and **Lukas Bolini¹**
+
+¹ Cancer Signaling and Microenvironment Program, Fox Chase Cancer Center, Philadelphia, PA, USA  
+² Laboratório de Biotecnologia, Centro de Biociências e Biotecnologia, Universidade Estadual do Norte Fluminense Darcy Ribeiro, Campos dos Goytacazes, RJ, Brazil
+
+**Correspondence:** Lorenzo Galluzzi (deadoc80@gmail.com) and Lukas Bolini (lukas.goncalves@fccc.edu)
+
 Reproducible R pipeline to calculate **MitoAll** and **MitoOnly** mitochondrial signature scores from bulk transcriptomic data.
 
 This repository accompanies a methodological chapter describing a transcriptome-based approach to estimate mitochondrial abundance indirectly using nuclear-encoded mitochondrial gene signatures.
