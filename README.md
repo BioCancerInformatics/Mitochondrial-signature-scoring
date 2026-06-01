@@ -17,7 +17,7 @@ The pipeline starts from gene-level TPM expression matrices and produces sample-
 Run the complete workflow in R with:
 
 ```r
-source("scripts/run_pipeline.R")
+source("Rscript/run_pipeline.R")
 ```
 
 The pipeline performs the following steps:
