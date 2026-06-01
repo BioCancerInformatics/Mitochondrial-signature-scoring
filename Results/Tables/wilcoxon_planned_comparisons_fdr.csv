@@ -1,0 +1,7 @@
+signature,comparison_id,group_1,group_2,n_group_1,n_group_2,median_group_1,median_group_2,median_difference,p_value,p_adj_fdr,direction
+MitoAll,Muscle_Skeletal_vs_Whole_Blood,Muscle - Skeletal,Whole Blood,818,803,0.29083583536155666,-0.30732869561844706,0.5981645309800037,3.540245851143548e-185,1.0620737553430642e-184,Higher in group_1
+MitoAll,Heart_Atrial_Appendage_vs_Whole_Blood,Heart - Atrial Appendage,Whole Blood,461,803,0.24878557772099102,-0.30732869561844706,0.5561142733394381,2.3290850546263605e-92,3.4936275819395406e-92,Higher in group_1
+MitoAll,Heart_Left_Ventricle_vs_Whole_Blood,Heart - Left Ventricle,Whole Blood,452,803,0.09104220341067545,-0.30732869561844706,0.3983708990291225,8.994366283190578e-17,8.994366283190578e-17,Higher in group_1
+MitoOnly,Muscle_Skeletal_vs_Whole_Blood,Muscle - Skeletal,Whole Blood,818,803,0.3039930292423141,-0.3506007341419121,0.6545937633842263,7.934217674978668e-200,2.3802653024936004e-199,Higher in group_1
+MitoOnly,Heart_Atrial_Appendage_vs_Whole_Blood,Heart - Atrial Appendage,Whole Blood,461,803,0.2718886639667905,-0.3506007341419121,0.6224893981087026,5.232217649847779e-104,7.848326474771669e-104,Higher in group_1
+MitoOnly,Heart_Left_Ventricle_vs_Whole_Blood,Heart - Left Ventricle,Whole Blood,452,803,0.14371275340645048,-0.3506007341419121,0.4943134875483626,2.0259918838636882e-23,2.0259918838636882e-23,Higher in group_1

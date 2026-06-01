@@ -1,0 +1,3 @@
+signature,genes_in_signature,genes_detected_for_scoring,coverage
+MitoAll,1127,1101,0.976929902395741
+MitoOnly,530,518,0.9773584905660377

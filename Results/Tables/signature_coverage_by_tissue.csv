@@ -1,0 +1,9 @@
+tissue,signature,genes_in_signature,genes_detected_for_scoring,coverage
+Heart - Atrial Appendage,MitoAll,1127,1101,0.976929902395741
+Heart - Left Ventricle,MitoAll,1127,1101,0.976929902395741
+Muscle - Skeletal,MitoAll,1127,1101,0.976929902395741
+Whole Blood,MitoAll,1127,1101,0.976929902395741
+Heart - Atrial Appendage,MitoOnly,530,518,0.9773584905660377
+Heart - Left Ventricle,MitoOnly,530,518,0.9773584905660377
+Muscle - Skeletal,MitoOnly,530,518,0.9773584905660377
+Whole Blood,MitoOnly,530,518,0.9773584905660377

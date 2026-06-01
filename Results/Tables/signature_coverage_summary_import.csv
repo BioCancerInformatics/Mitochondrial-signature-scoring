@@ -1,0 +1,3 @@
+signature,genes_in_signature,genes_detected_in_gtex,coverage
+MitoAll,1127,1102,0.9778172138420586
+MitoOnly,530,519,0.9792452830188679
