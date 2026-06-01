@@ -79,10 +79,31 @@ Mitochondrial-signature-scoring/
 │
 ├── Results/
 │   ├── Tables/
-│   └── Figures/
-│       ├── Figure_MitoSignature_Workflow.png
-│       ├── Figure_1.png
-│       └── Figure_1.pdf
+│   │   ├── sample_summary_by_tissue.csv
+│   │   ├── detected_signature_genes_by_tissue.csv
+│   │   ├── signature_coverage_summary_import.csv
+│   │   ├── signature_coverage_by_tissue.csv
+│   │   ├── signature_coverage_overall.csv
+│   │   ├── gtex_mitoall_mitoonly_sample_scores.csv
+│   │   ├── signature_score_summary_by_tissue.csv
+│   │   ├── wilcoxon_planned_comparisons_fdr.csv
+│   │   └── Figure_1_score_summary_by_tissue.csv
+│   │
+│   ├── RDS/
+│   │   ├── signature_genes_clean.rds
+│   │   ├── gtex_mito_signature_genes_log2TPM_long.rds
+│   │   ├── gtex_expr_gene_wise_zscores.rds
+│   │   └── gtex_mitoall_mitoonly_sample_scores.rds
+│   │
+│   ├── Figures/
+│   │   ├── Figure1_MitoSignature_Workflow.png
+│   │   ├── Figure1_MitoSignature_Workflow.pdf
+│   │   ├── Figure_1.png
+│   │   ├── Figure_1.pdf
+│   │   └── Figure_1.tiff
+│   │
+│   └── SessionInfo/
+│       └── run_pipeline_sessionInfo.txt
 │
 └── docs/
     └── GTEx_download_instructions.md
@@ -169,3 +190,6 @@ Because this workflow uses bulk transcriptomic data, mitochondrial signature sco
 ## Citation
 
 Citation information will be added upon publication of the chapter.
+
+
+
