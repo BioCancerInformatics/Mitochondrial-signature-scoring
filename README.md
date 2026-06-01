@@ -21,7 +21,7 @@ The representative analysis uses **GTEx Analysis V11** normal tissue RNA-seq dat
 
 The workflow starts from gene-level TPM expression matrices and produces sample-level mitochondrial signature scores.
 
-![Workflow](https://raw.githubusercontent.com/BioCancerInformatics/Mitochondrial-signature-scoring/main/results/figures/Figure0_Workflow.png)
+![Workflow](Results/Figures/Figure1_Workflow_Mitochondrial_Signature_Scoring.png)
 
 **Figure 0. Computational workflow.** GTEx gene-level TPM matrices are imported, gene symbols are harmonized, MitoAll and MitoOnly genes are matched to the expression matrix, expression values are transformed as `log2(TPM + 1)`, gene-wise z-scores are calculated, and sample-level mitochondrial signature scores are obtained by averaging standardized expression across detected genes in each signature.
 
